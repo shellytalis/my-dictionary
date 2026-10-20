@@ -23,8 +23,8 @@ nav button.on{background:var(--brand);color:var(--brand-ink);border-color:var(--
 main{max-width:720px;margin:0 auto;padding:8px 16px 60px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:18px;margin:12px 0}
 h2{margin:0 0 10px;font-size:20px}
-input[type=text]{width:100%;padding:12px 14px;font:inherit;font-size:18px;border:1.5px solid var(--line);border-radius:12px;background:var(--bg);color:var(--ink)}
-input[type=text]:focus{outline:2px solid var(--brand);border-color:transparent}
+input[type=text],input[type=email],input[type=password]{width:100%;padding:12px 14px;font:inherit;font-size:18px;border:1.5px solid var(--line);border-radius:12px;background:var(--bg);color:var(--ink)}
+input[type=text]:focus,input[type=email]:focus,input[type=password]:focus{outline:2px solid var(--brand);border-color:transparent}
 .en{direction:ltr;text-align:left;unicode-bidi:isolate}
 .btn{border:0;background:var(--brand);color:var(--brand-ink);padding:11px 20px;border-radius:12px;font:inherit;font-size:16px;cursor:pointer}
 .btn.alt{background:transparent;color:var(--ink);border:1.5px solid var(--line)}
@@ -79,6 +79,7 @@ input[type=text]:focus{outline:2px solid var(--brand);border-color:transparent}
   <button data-t="list">📖 המילים שלי</button>
   <button data-t="practice">🎮 תרגול</button>
   <button data-t="progress">📈 התקדמות</button>
+  <button data-t="account">☁️ חשבון</button>
 </nav>
 <main>
 
@@ -148,16 +149,106 @@ input[type=text]:focus{outline:2px solid var(--brand);border-color:transparent}
     <div id="hard"></div>
   </div>
 </section>
+<!-- חשבון -->
+<section id="t-account" class="hide">
+  <div class="card">
+    <h2>חשבון וסנכרון</h2>
+    <div id="acctOff" class="hide muted">הסנכרון עדיין לא הוגדר באתר הזה. המילים נשמרות רק בדפדפן הנוכחי.</div>
+    <div id="acctIn" class="hide">
+      <p>מחוברת כ-<b class="en" id="acctMail"></b></p>
+      <p class="muted" id="syncStatus"></p>
+      <div class="row"><button class="btn" id="syncNow">סנכרון עכשיו</button><button class="btn alt" id="signOut">התנתקות</button></div>
+    </div>
+    <form id="authForm" class="hide">
+      <p class="muted">התחברי כדי לראות את אותן מילים בכל מכשיר. אם עוד אין לך חשבון, בחרי “הרשמה”.</p>
+      <input type="email" id="authMail" class="en" placeholder="אימייל" autocomplete="email" style="margin-bottom:10px">
+      <input type="password" id="authPass" class="en" placeholder="סיסמה (לפחות 6 תווים)" autocomplete="current-password">
+      <div class="row" style="margin-top:14px"><button class="btn" id="btnIn" type="submit">התחברות</button><button class="btn alt" id="btnUp" type="button">הרשמה</button></div>
+    </form>
+    <div id="authMsg"></div>
+  </div>
+</section>
 </main>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <script>
 'use strict';
+/* הגדרות Supabase (המפתח הציבורי בטוח לפרסום; ההגנה היא בהרשאות הטבלה) */
+const SUPA_URL='https://gbtiswslvehrojzjggbi.supabase.co', SUPA_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdidGlzd3NsdmVocm9qempnZ2JpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI1MDg3MzEsImV4cCI6MjEwODA4NDczMX0.BeXe9mu1Uz8XQ8LmhSFoccncSisU2BM7pOqnaNKPplk';
 window.onerror=(m)=>{const d=document.getElementById('addMsg'); if(d) d.innerHTML='<div class="msg err">שגיאה בדף: '+m+'</div>';};
 /* ---------- אחסון ---------- */
 const KEY='myDictionary.v1';
 let db={words:[],log:[]};          // log: {d:'YYYY-MM-DD', c:נכון, t:סה"כ}
 try{ const s=JSON.parse(localStorage.getItem(KEY)); if(s&&s.words) db=s; }catch(e){}
-const save=()=>{ try{localStorage.setItem(KEY,JSON.stringify(db));}catch(e){} };
+let sb=null, user=null, pushT=null, firstAuth=true;
+const stamp=()=>new Date().toLocaleTimeString('he-IL',{hour:'2-digit',minute:'2-digit'});
+const setStatus=t=>{ const e=document.getElementById('syncStatus'); if(e) e.textContent=t; };
+const save=()=>{
+  try{localStorage.setItem(KEY,JSON.stringify(db));}catch(e){}
+  if(user){ clearTimeout(pushT); setStatus('שומר…'); pushT=setTimeout(push,800); }
+};
+function merge(a,b){
+  const del=Object.assign({},a.del||{});
+  for(const k in (b.del||{})) del[k]=Math.max(del[k]||0,b.del[k]);
+  const m=new Map();
+  for(const w of [...(b.words||[]),...(a.words||[])]){
+    const k=w.en.trim().toLowerCase().replace(/s+/g,' ');
+    if(del[k]&&w.id<=del[k]) continue;
+    const p=m.get(k); if(!p||(w.ok+w.bad)>(p.ok+p.bad)) m.set(k,w);
+  }
+  const lg=new Map();
+  for(const e of [...(b.log||[]),...(a.log||[])]){ const p=lg.get(e.d); if(!p||e.t>p.t) lg.set(e.d,e); }
+  return {words:[...m.values()],log:[...lg.values()],del};
+}
+async function push(){
+  if(!sb||!user) return;
+  const {error}=await sb.from('user_state').upsert({user_id:user.id,data:db,updated_at:new Date().toISOString()});
+  setStatus(error?'לא הצלחתי לשמור בענן':'מסונכרן ✓ '+stamp());
+}
+async function pull(){
+  if(!sb||!user) return;
+  if(!document.getElementById('game').classList.contains('hide')) return;   // באמצע משחק
+  setStatus('מסנכרן…');
+  const {data,error}=await sb.from('user_state').select('data').eq('user_id',user.id).maybeSingle();
+  if(error){ setStatus('לא הצלחתי להתחבר לענן'); return; }
+  if(data&&data.data&&data.data.words) db=merge(db,data.data);
+  try{localStorage.setItem(KEY,JSON.stringify(db));}catch(e){}
+  await push();
+  const on=document.querySelector('nav .on'); if(on&&on.dataset.t!=='add') show(on.dataset.t);
+}
+function renderAcct(){
+  const on=!!sb;
+  document.getElementById('acctOff').classList.toggle('hide',on);
+  document.getElementById('acctIn').classList.toggle('hide',!user);
+  document.getElementById('authForm').classList.toggle('hide',!on||!!user);
+  if(user) document.getElementById('acctMail').textContent=user.email;
+}
+function authMsg(t,c){ document.getElementById('authMsg').innerHTML=t?'<div class="msg '+c+'">'+esc(t)+'</div>':''; }
+const heErr=m=>/Invalid login/i.test(m)?'אימייל או סיסמה שגויים':/already registered/i.test(m)?'האימייל הזה כבר רשום, נסי להתחבר':/at least 6/i.test(m)?'הסיסמה צריכה להיות באורך 6 תווים לפחות':/rate limit/i.test(m)?'יותר מדי ניסיונות, נסי שוב בעוד כמה דקות':m;
+async function auth(kind){
+  const email=document.getElementById('authMail').value.trim(), password=document.getElementById('authPass').value;
+  if(!email||!password){ authMsg('צריך אימייל וסיסמה','err'); return; }
+  authMsg('רגע…','ok');
+  const r=kind==='up'?await sb.auth.signUp({email,password}):await sb.auth.signInWithPassword({email,password});
+  if(r.error) return authMsg(heErr(r.error.message),'err');
+  if(kind==='up'&&!r.data.session) return authMsg('נשלח אליך מייל לאישור. אחרי האישור חזרי והתחברי.','ok');
+  authMsg('');
+}
+function setUser(u){
+  const changed=(u&&u.id)!==(user&&user.id);
+  user=u||null; renderAcct();
+  if(user&&changed) pull();
+  if(!user&&firstAuth&&!db.words.length) show('account');
+  firstAuth=false;
+}
+function initAuth(){
+  if(SUPA_URL&&SUPA_KEY&&window.supabase){
+    sb=window.supabase.createClient(SUPA_URL,SUPA_KEY);
+    sb.auth.onAuthStateChange((_e,session)=>setUser(session&&session.user));
+  }
+  renderAcct();
+}
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden&&user) pull(); });
 const $=id=>document.getElementById(id);
 const today=()=>new Date().toISOString().slice(0,10);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -180,7 +271,7 @@ function speak(text){
 /* ---------- ניווט ---------- */
 function show(t){
   document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
-  ['add','list','practice','progress'].forEach(x=>$('t-'+x).classList.toggle('hide',x!==t));
+  ['add','list','practice','progress','account'].forEach(x=>$('t-'+x).classList.toggle('hide',x!==t));
   if(t==='list') renderList();
   if(t==='practice') renderMenu();
   if(t==='progress') renderProgress();
@@ -247,7 +338,7 @@ $('search').oninput=renderList;
 $('wordList').onclick=e=>{
   const s=e.target.closest('[data-s]'); if(s) return speak(s.dataset.s);
   const d=e.target.closest('[data-d]');
-  if(d && confirm('למחוק את המילה?')){ db.words=db.words.filter(w=>String(w.id)!==d.dataset.d); save(); renderList(); }
+  if(d && confirm('למחוק את המילה?')){ const w=db.words.find(x=>String(x.id)===d.dataset.d); if(w){ db.del=db.del||{}; db.del[norm(w.en)]=Date.now(); } db.words=db.words.filter(x=>String(x.id)!==d.dataset.d); save(); renderList(); }
 };
 $('exportBtn').onclick=()=>{
   const a=document.createElement('a');
@@ -440,6 +531,16 @@ function streak(){
   while(set.has(d.toISOString().slice(0,10))){ n++; d.setDate(d.getDate()-1); }
   return n;
 }
+$('authForm').onsubmit=e=>{ e.preventDefault(); auth('in'); };
+$('btnUp').onclick=()=>auth('up');
+$('syncNow').onclick=()=>pull();
+$('signOut').onclick=async()=>{
+  await push(); clearTimeout(pushT);
+  await sb.auth.signOut();
+  db={words:[],log:[],del:{}}; try{localStorage.removeItem(KEY);}catch(e){}
+  renderAcct(); show('account');
+};
+initAuth();
 </script>
 </body>
 </html>
