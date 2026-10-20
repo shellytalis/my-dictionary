@@ -377,6 +377,35 @@ async function openEx(id){
   render();
 }
 
+/* ---------- תרגום ---------- */
+const stripNik=s=>String(s||'').replace(/[\u0591-\u05C7]/g,'').replace(/\s+/g,' ').trim();
+const hasHe=s=>/[\u05D0-\u05EA]/.test(s);
+async function getJson(url){
+  const ac=new AbortController(); const t=setTimeout(()=>ac.abort(),10000);
+  try{ const r=await fetch(url,{signal:ac.signal}); if(!r.ok) throw new Error('http'); return await r.json(); }
+  finally{ clearTimeout(t); }
+}
+async function translateWord(en){
+  const q=encodeURIComponent(en);
+  // תרגום ראשי + משמעויות נוספות לפי חלק דיבר
+  try{
+    const j=await getJson('https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=he&dt=t&dt=bd&q='+q);
+    const he=stripNik((j[0]||[]).map(x=>x&&x[0]||'').join(''));
+    if(he&&hasHe(he)){
+      const set=new Set();
+      (j[1]||[]).forEach(pos=>(pos[1]||[]).slice(0,3).forEach(t=>{ t=stripNik(t); if(t&&t!==he&&hasHe(t)&&t.length<30) set.add(t); }));
+      return {he,alts:[...set].slice(0,6)};
+    }
+  }catch(e){}
+  // גיבוי
+  const j=await getJson('https://api.mymemory.translated.net/get?langpair=en|he&q='+q);
+  let he=stripNik(j.responseData&&j.responseData.translatedText);
+  if(!hasHe(he)) he='';
+  const set=new Set();
+  (j.matches||[]).forEach(m=>{ const t=stripNik(m.translation); if(t&&t!==he&&hasHe(t)&&t.length<30) set.add(t); });
+  return {he,alts:[...set].slice(0,5)};
+}
+
 /* ---------- הוספה + תרגום ---------- */
 let pending=null;
 function msg(html,cls){ $('addMsg').innerHTML=html?`<div class="msg ${cls}">${html}</div>`:''; }
@@ -389,16 +418,9 @@ $('addForm').onsubmit=async e=>{
   if(exists){ msg(`המילה כבר שמורה: <b>${esc(exists.en)}</b> = ${esc(exists.he)}`,'err'); return; }
   $('trBtn').disabled=true; $('trBtn').textContent='מתרגם…';
   let he='',alts=[];
-  try{
-    const ac=new AbortController(); setTimeout(()=>ac.abort(),10000);
-    const r=await fetch('https://api.mymemory.translated.net/get?langpair=en|he&q='+encodeURIComponent(en),{signal:ac.signal});
-    const j=await r.json();
-    he=(j.responseData&&j.responseData.translatedText)||'';
-    const set=new Set();
-    (j.matches||[]).forEach(m=>{ const t=(m.translation||'').trim(); if(t&&t!==he&&t.length<40) set.add(t); });
-    alts=[...set].slice(0,5);
-    if(/MYMEMORY|QUERY LENGTH/i.test(he)) he='';
-  }catch(err){ msg('לא הצלחתי להתחבר לשירות התרגום. אפשר להקליד תרגום ידנית ולשמור.','err'); }
+  try{ ({he,alts}=await translateWord(en)); }
+  catch(err){ msg('לא הצלחתי להתחבר לשירות התרגום. אפשר להקליד תרגום ידנית ולשמור.','err'); }
+  if(!he&&!$('addMsg').innerHTML) msg('לא מצאתי תרגום למילה הזאת. אפשר להקליד אותו ידנית.','err');
   $('trBtn').disabled=false; $('trBtn').textContent='תרגום';
   pending={en};
   $('resEn').textContent=en; $('heIn').value=he;
