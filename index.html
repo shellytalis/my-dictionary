@@ -77,6 +77,8 @@ mark{background:color-mix(in srgb,var(--brand) 25%,transparent);color:inherit;bo
 .sugg{display:grid;gap:6px;margin-top:8px}
 .sugg button{text-align:left;direction:ltr;border:1.5px solid var(--line);background:var(--card);color:var(--ink);border-radius:12px;padding:9px 12px;font:inherit;font-size:15px;cursor:pointer}
 .sugg button:hover{border-color:var(--brand)}
+.sugg button.pick{border-color:var(--brand);background:color-mix(in srgb,var(--brand) 16%,var(--card))}
+.sugg .mini{text-align:center;direction:rtl;border:0;background:none;color:var(--brand)}
 .mini{border:0;background:none;color:var(--brand);cursor:pointer;font:inherit;font-size:14px;padding:4px 2px}
 </style>
 </head>
@@ -111,8 +113,8 @@ mark{background:color-mix(in srgb,var(--brand) 25%,transparent);color:inherit;bo
       <input type="text" id="heIn" style="margin-top:6px">
       <div class="chips" id="alts"></div>
       <div style="margin-top:18px">
-        <div class="muted">משפט לדוגמה (אפשר לדלג):</div>
-        <input type="text" id="exIn" class="en" style="margin-top:6px" placeholder="בחרי הצעה, או כתבי משפט משלך עם המילה" autocomplete="off">
+        <div class="muted">רוצה לראות את המילה במשפט? לחצי על משפט כדי לשמור אותו (אפשר לדלג):</div>
+        <input type="hidden" id="exIn">
         <div class="sugg" id="sugg"></div>
       </div>
       <div class="row" style="margin-top:16px">
@@ -341,14 +343,21 @@ async function suggest(en){
 async function fillSugg(box,input,en){
   box.innerHTML='<span class="muted">מחפש משפטים…</span>';
   const s=await suggest(en);
-  box.innerHTML=s.length?s.map(t=>`<button type="button">${esc(t)}</button>`).join(''):'<span class="muted">לא מצאתי משפטים מוכנים. אפשר לכתוב משפט משלך.</span>';
-  box.onclick=e=>{ const b=e.target.closest('button'); if(b) input.value=b.textContent; };
+  box.innerHTML=s.length?s.map(t=>`<button type="button" class="sg">${esc(t)}</button>`).join('')+'<button type="button" class="mini" data-more="1">🔄 הצעות אחרות</button>':'<span class="muted">לא מצאתי משפטים מתאימים למילה הזאת.</span>';
+  box.onclick=e=>{
+    const b=e.target.closest('button'); if(!b) return;
+    if(b.dataset.more){ input.value=''; fillSugg(box,input,en); return; }
+    const was=b.classList.contains('pick');
+    box.querySelectorAll('.sg').forEach(x=>x.classList.remove('pick'));
+    if(was) input.value=''; else { b.classList.add('pick'); input.value=b.textContent; }
+  };
 }
 function openEx(id){
   const w=db.words.find(x=>String(x.id)===id), box=$('ex-'+id); if(!w||!box) return;
-  box.innerHTML=`<div class="sb"><input type="text" class="en" id="exE" value="${esc(w.ex||'')}" placeholder="משפט עם המילה ${esc(w.en)}" autocomplete="off"><div class="sugg" id="exS"></div><div class="row" style="margin-top:10px"><button class="btn" id="exSave">שמירה</button><button class="btn alt" id="exCancel">ביטול</button></div></div>`;
+  box.innerHTML=`<div class="sb"><div class="muted">בחרי משפט למילה ${esc(w.en)}:</div><input type="hidden" id="exE" value="${esc(w.ex||'')}"><div class="sugg" id="exS"></div><div class="row" style="margin-top:10px"><button class="btn" id="exSave">שמירה</button><button class="btn alt" id="exCancel">ביטול</button>${w.ex?'<button class="btn alt" id="exDel">הסרת המשפט</button>':''}</div></div>`;
   $('exCancel').onclick=renderList;
   $('exSave').onclick=()=>{ const t=$('exE').value.trim(); if(t!==(w.ex||'')){ if(t) w.ex=t; else delete w.ex; delete w.exHe; save(); } renderList(); };
+  if($('exDel')) $('exDel').onclick=()=>{ delete w.ex; delete w.exHe; save(); renderList(); };
   fillSugg($('exS'),$('exE'),w.en);
 }
 
