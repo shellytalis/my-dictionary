@@ -67,6 +67,17 @@ input[type=text]:focus,input[type=email]:focus,input[type=password]:focus{outlin
 .hide{display:none!important}
 .fb{margin-top:12px;font-weight:600;min-height:26px}
 .center{text-align:center}
+mark{background:color-mix(in srgb,var(--brand) 25%,transparent);color:inherit;border-radius:4px;padding:0 3px}
+.wi{border-bottom:1px solid var(--line)} .wi:last-child{border:0} .wi .word{border:0;padding-bottom:4px}
+.sb{margin:2px 0 10px;padding:10px 12px;background:var(--bg);border-radius:12px}
+.sb .s{direction:ltr;text-align:left;unicode-bidi:isolate}
+.sb .exhe{margin-top:6px;color:var(--muted);font-size:15px}
+.flash .sb{width:100%;margin-top:14px}
+.blank{display:inline-block;min-width:70px;border-bottom:3px solid var(--brand);margin:0 3px}
+.sugg{display:grid;gap:6px;margin-top:8px}
+.sugg button{text-align:left;direction:ltr;border:1.5px solid var(--line);background:var(--card);color:var(--ink);border-radius:12px;padding:9px 12px;font:inherit;font-size:15px;cursor:pointer}
+.sugg button:hover{border-color:var(--brand)}
+.mini{border:0;background:none;color:var(--brand);cursor:pointer;font:inherit;font-size:14px;padding:4px 2px}
 </style>
 </head>
 <body>
@@ -99,6 +110,11 @@ input[type=text]:focus,input[type=email]:focus,input[type=password]:focus{outlin
       <div class="muted">תרגום (אפשר לערוך, או לבחור הצעה אחרת):</div>
       <input type="text" id="heIn" style="margin-top:6px">
       <div class="chips" id="alts"></div>
+      <div style="margin-top:18px">
+        <div class="muted">משפט לדוגמה (אפשר לדלג):</div>
+        <input type="text" id="exIn" class="en" style="margin-top:6px" placeholder="בחרי הצעה, או כתבי משפט משלך עם המילה" autocomplete="off">
+        <div class="sugg" id="sugg"></div>
+      </div>
       <div class="row" style="margin-top:16px">
         <button class="btn" id="saveBtn">💾 שמירה</button>
         <button class="btn alt" id="cancelBtn">ביטול</button>
@@ -194,7 +210,11 @@ function merge(a,b){
   for(const w of [...(b.words||[]),...(a.words||[])]){
     const k=w.en.trim().toLowerCase().replace(/s+/g,' ');
     if(del[k]&&w.id<=del[k]) continue;
-    const p=m.get(k); if(!p||(w.ok+w.bad)>(p.ok+p.bad)) m.set(k,w);
+    const p=m.get(k);
+    if(!p){ m.set(k,{...w}); continue; }
+    const win=(w.ok+w.bad)>(p.ok+p.bad)?{...w}:p, lose=win===p?w:p;
+    if(!win.ex&&lose.ex){ win.ex=lose.ex; if(lose.exHe) win.exHe=lose.exHe; }
+    m.set(k,win);
   }
   const lg=new Map();
   for(const e of [...(b.log||[]),...(a.log||[])]){ const p=lg.get(e.d); if(!p||e.t>p.t) lg.set(e.d,e); }
@@ -248,6 +268,19 @@ function initAuth(){
   }
   renderAcct();
 }
+document.addEventListener('click',async e=>{
+  const sp=e.target.closest('[data-sp]'); if(sp){ speak(sp.dataset.sp); return; }
+  const tr=e.target.closest('[data-tr]'); if(!tr) return;
+  const w=db.words.find(x=>String(x.id)===tr.dataset.tr); if(!w) return;
+  tr.textContent='מתרגם…'; tr.disabled=true;
+  try{
+    const r=await fetch('https://api.mymemory.translated.net/get?langpair=en|he&q='+encodeURIComponent(w.ex));
+    const j=await r.json(), t=(j.responseData&&j.responseData.translatedText)||'';
+    if(!t||/MYMEMORY/i.test(t)) throw 0;
+    w.exHe=t; save();
+  }catch(err){ tr.textContent='לא הצלחתי, נסי שוב'; tr.disabled=false; return; }
+  const sb=tr.closest('.sb'); if(sb) sb.outerHTML=sentBlock(w);
+});
 document.addEventListener('visibilitychange',()=>{ if(!document.hidden&&user) pull(); });
 const $=id=>document.getElementById(id);
 const today=()=>new Date().toISOString().slice(0,10);
@@ -278,6 +311,47 @@ function show(t){
 }
 $('nav').onclick=e=>{ const b=e.target.closest('button'); if(b) show(b.dataset.t); };
 
+/* ---------- משפטים לדוגמה ---------- */
+const reEsc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+function wordRe(en,flags){
+  let w=en.trim(); if(!/\s/.test(w)&&w.length>3) w=w.replace(/[ey]$/i,'');
+  return new RegExp('\\b'+reEsc(w)+'\\w*',flags||'i');
+}
+const clozable=w=>!!(w.ex&&wordRe(w.en).test(w.ex));
+const hl=w=>esc(w.ex).replace(wordRe(w.en,'gi'),m=>'<mark>'+m+'</mark>');
+const blanked=w=>esc(w.ex).replace(wordRe(w.en,'i'),'<span class="blank"></span>');
+function sentBlock(w){
+  if(!w.ex) return '';
+  return `<div class="sb" data-wid="${w.id}"><div class="row"><button class="spk" data-sp="${esc(w.ex)}" style="width:34px;height:34px;font-size:16px">🔊</button><div class="s grow">${hl(w)}</div></div>`+
+    (w.exHe?`<div class="exhe">${esc(w.exHe)}</div>`:`<button class="mini" data-tr="${w.id}">תרגום המשפט</button>`)+`</div>`;
+}
+async function suggest(en){
+  try{
+    const r=await fetch('https://en.wiktionary.org/api/rest_v1/page/definition/'+encodeURIComponent(en.trim().toLowerCase()));
+    if(!r.ok) return [];
+    const j=await r.json(), re=wordRe(en), seen=new Set(), out=[];
+    for(const e of (j.en||[])) for(const d of e.definitions) for(const x of (d.parsedExamples||[])){
+      const t=(new DOMParser().parseFromString(x.example,'text/html').body.textContent||'').replace(/\s+/g,' ').trim();
+      if(t.length<15||t.length>140||!/\s/.test(t)||!/[.!?]["']?$/.test(t)||!re.test(t)||seen.has(t)) continue;
+      seen.add(t); out.push(t);
+    }
+    return shuffle(out).slice(0,4);
+  }catch(e){ return []; }
+}
+async function fillSugg(box,input,en){
+  box.innerHTML='<span class="muted">מחפש משפטים…</span>';
+  const s=await suggest(en);
+  box.innerHTML=s.length?s.map(t=>`<button type="button">${esc(t)}</button>`).join(''):'<span class="muted">לא מצאתי משפטים מוכנים. אפשר לכתוב משפט משלך.</span>';
+  box.onclick=e=>{ const b=e.target.closest('button'); if(b) input.value=b.textContent; };
+}
+function openEx(id){
+  const w=db.words.find(x=>String(x.id)===id), box=$('ex-'+id); if(!w||!box) return;
+  box.innerHTML=`<div class="sb"><input type="text" class="en" id="exE" value="${esc(w.ex||'')}" placeholder="משפט עם המילה ${esc(w.en)}" autocomplete="off"><div class="sugg" id="exS"></div><div class="row" style="margin-top:10px"><button class="btn" id="exSave">שמירה</button><button class="btn alt" id="exCancel">ביטול</button></div></div>`;
+  $('exCancel').onclick=renderList;
+  $('exSave').onclick=()=>{ const t=$('exE').value.trim(); if(t!==(w.ex||'')){ if(t) w.ex=t; else delete w.ex; delete w.exHe; save(); } renderList(); };
+  fillSugg($('exS'),$('exE'),w.en);
+}
+
 /* ---------- הוספה + תרגום ---------- */
 let pending=null;
 function msg(html,cls){ $('addMsg').innerHTML=html?`<div class="msg ${cls}">${html}</div>`:''; }
@@ -305,6 +379,8 @@ $('addForm').onsubmit=async e=>{
   $('resEn').textContent=en; $('heIn').value=he;
   $('alts').innerHTML=alts.map(a=>`<button type="button" class="chip">${esc(a)}</button>`).join('');
   $('result').classList.remove('hide');
+  $('exIn').value='';
+  fillSugg($('sugg'),$('exIn'),en);
   speak(en);
   $('heIn').focus();
 };
@@ -314,10 +390,11 @@ $('cancelBtn').onclick=()=>{ $('result').classList.add('hide'); pending=null; $(
 $('saveBtn').onclick=()=>{
   const he=$('heIn').value.trim();
   if(!pending||!he){ msg('חסר תרגום','err'); return; }
-  db.words.push({id:Date.now()+Math.random(),en:pending.en,he,added:today(),box:1,ok:0,bad:0,due:today()});
+  const ex=$('exIn').value.trim();
+  db.words.push({id:Date.now()+Math.random(),en:pending.en,he,added:today(),box:1,ok:0,bad:0,due:today(),...(ex?{ex}:{})});
   save();
   msg(`נשמר! <b>${esc(pending.en)}</b> = ${esc(he)} · סה"כ ${db.words.length} מילים`,'ok');
-  pending=null; $('result').classList.add('hide'); $('enIn').value=''; $('enIn').focus();
+  pending=null; $('result').classList.add('hide'); $('exIn').value=''; $('sugg').innerHTML=''; $('enIn').value=''; $('enIn').focus();
 };
 
 /* ---------- רשימה ---------- */
@@ -327,15 +404,17 @@ function renderList(){
   const ws=db.words.filter(w=>!q||norm(w.en).includes(q)||w.he.includes(q)).slice().reverse();
   $('listTitle').textContent=`המילים שלי (${db.words.length})`;
   $('wordList').innerHTML=ws.length?ws.map(w=>`
-    <div class="word">
+    <div class="wi"><div class="word">
       <button class="spk" data-s="${esc(w.en)}">🔊</button>
       <div class="grow"><div class="w en">${esc(w.en)}</div><div class="muted">${esc(w.he)}</div></div>
       ${dots(w)}
       <button class="x" data-d="${w.id}" title="מחיקה">🗑</button>
-    </div>`).join(''):'<p class="muted">עוד אין מילים. עברי ללשונית “הוספה”.</p>';
+    </div>
+    <div id="ex-${w.id}">${sentBlock(w)}<button class="mini" data-ex="${w.id}">${w.ex?'✏️ עריכת משפט':'➕ הוספת משפט'}</button></div></div>`).join(''):'<p class="muted">עוד אין מילים. עברי ללשונית “הוספה”.</p>';
 }
 $('search').oninput=renderList;
 $('wordList').onclick=e=>{
+  const ex=e.target.closest('[data-ex]'); if(ex) return openEx(ex.dataset.ex);
   const s=e.target.closest('[data-s]'); if(s) return speak(s.dataset.s);
   const d=e.target.closest('[data-d]');
   if(d && confirm('למחוק את המילה?')){ const w=db.words.find(x=>String(x.id)===d.dataset.d); if(w){ db.del=db.del||{}; db.del[norm(w.en)]=Date.now(); } db.words=db.words.filter(x=>String(x.id)!==d.dataset.d); save(); renderList(); }
@@ -361,6 +440,7 @@ const MODES=[
   {id:'choice',name:'✅ בחירה מרובה',min:2,hint:'בוחרת את התרגום הנכון מבין כמה אפשרויות (לפעמים גם הפוך).'},
   {id:'listen',name:'🎧 הקשבה והקלדה',min:1,hint:'שומעת את המילה ומקלידה אותה באנגלית — מתרגל איות והבנה.'},
   {id:'type',name:'⌨️ כתיבה מהזיכרון',min:1,hint:'רואה את התרגום בעברית וכותבת את המילה באנגלית.'},
+  {id:'cloze',name:'🧩 השלמת משפט',min:2,hint:'מחפשת את המילה החסרה בתוך משפט.'},
   {id:'match',name:'🔗 התאמה',min:3,hint:'מחברת בין מילים באנגלית לתרגום שלהן.'}
 ];
 let mode='choice', G=null;
@@ -368,18 +448,19 @@ function renderMenu(){
   $('game').classList.add('hide'); $('menu').classList.remove('hide');
   $('modes').innerHTML=MODES.map(m=>`<button class="chip ${m.id===mode?'sel':''}" data-m="${m.id}">${m.name}</button>`).join('');
   const m=MODES.find(x=>x.id===mode);
-  const ok=db.words.length>=m.min;
-  $('menuHint').textContent=ok?m.hint:`צריך לפחות ${m.min} מילים שמורות למשחק הזה (יש ${db.words.length}).`;
+  let ok=db.words.length>=m.min, why=`צריך לפחות ${m.min} מילים שמורות למשחק הזה (יש ${db.words.length}).`;
+  if(ok&&m.id==='cloze'&&!db.words.some(clozable)){ ok=false; why='למשחק הזה צריך מילים שיש להן משפט. אפשר להוסיף משפט ברשימת המילים.'; }
+  $('menuHint').textContent=ok?m.hint:why;
   $('startBtn').disabled=!ok;
 }
 $('modes').onclick=e=>{ const c=e.target.closest('[data-m]'); if(c){mode=c.dataset.m;renderMenu();} };
 $('startBtn').onclick=startGame;
 
 // בחירת מילים: קודם אלו שזמנן הגיע וברמה נמוכה
-function pick(n){
+function pick(n,pool){
   const t=today();
   const score=w=>(w.due<=t?0:5)+w.box+Math.random()*2.5;
-  return db.words.slice().sort((a,b)=>score(a)-score(b)).slice(0,n);
+  return (pool||db.words).slice().sort((a,b)=>score(a)-score(b)).slice(0,n);
 }
 function record(w,right){
   w.ok+=right?1:0; w.bad+=right?0:1;
@@ -391,7 +472,7 @@ function record(w,right){
 }
 function startGame(){
   if(mode==='match') return startMatch();
-  G={mode,qs:pick(10),i:0,right:0,total:0,missed:[]};
+  G={mode,qs:pick(10,mode==='cloze'?db.words.filter(clozable):null),i:0,right:0,total:0,missed:[]};
   $('menu').classList.add('hide'); $('game').classList.remove('hide');
   nextQ();
 }
@@ -408,7 +489,7 @@ function nextQ(){
     $('sp').onclick=e=>{e.stopPropagation();speak(w.en);};
     speak(w.en);
     $('fl').onclick=()=>{
-      $('fl').innerHTML=`<div class="big en">${esc(w.en)}</div><div class="big" style="color:var(--brand)">${esc(w.he)}</div>`;
+      $('fl').innerHTML=`<div class="big en">${esc(w.en)}</div><div class="big" style="color:var(--brand)">${esc(w.he)}</div>${sentBlock(w)}`;
       $('fl').onclick=null;
       $('ans').innerHTML=`<div class="row" style="justify-content:center;margin-top:12px"><button class="btn bad" id="no">לא ידעתי</button><button class="btn good" id="yes">ידעתי ✓</button></div>`;
       $('yes').onclick=()=>answered(w,true,0);
@@ -432,14 +513,30 @@ function nextQ(){
       answered(w,right,1100);
     });
   }
+  else if(G.mode==='cloze'){
+    const opts=shuffle([w,...shuffle(db.words.filter(x=>x.id!==w.id)).slice(0,3)]);
+    g.innerHTML=head()+`<div class="center"><div class="muted">איזו מילה חסרה?</div>
+      <div class="big en" style="font-size:24px;line-height:1.6;text-align:center">${blanked(w)}</div>
+      <div class="muted">רמז: ${esc(w.he)}</div></div>
+      <div class="grid2" style="margin-top:14px">${opts.map(o=>`<button class="opt en" data-id="${o.id}">${esc(o.en)}</button>`).join('')}</div><div class="fb" id="fb"></div>`;
+    g.querySelectorAll('.opt').forEach(b=>b.onclick=()=>{
+      const right=b.dataset.id===String(w.id);
+      g.querySelectorAll('.opt').forEach(x=>{x.disabled=true; if(x.dataset.id===String(w.id)) x.classList.add('right');});
+      if(!right) b.classList.add('wrong');
+      $('fb').innerHTML='<div class="en" style="font-weight:400">'+hl(w)+'</div>';
+      speak(w.ex);
+      answered(w,right,2800);
+    });
+  }
   else if(G.mode==='listen'||G.mode==='type'){
     const L=G.mode==='listen';
     g.innerHTML=head()+`<div class="center"><div class="muted">${L?'הקלידי את מה ששמעת':'כתבי באנגלית'}</div>
-      ${L?'<button class="btn" id="sp" style="margin:10px">🔊 השמעה</button>':`<div class="big">${esc(w.he)}</div>`}</div>
+      ${L?'<button class="btn" id="sp" style="margin:10px">🔊 השמעה</button>':`<div class="big">${esc(w.he)}</div>`}${!L&&clozable(w)?'<button class="mini" id="hint" type="button">💡 רמז: משפט</button>':''}</div>
       <form id="f" class="row"><input class="en grow" id="inp" type="text" autocomplete="off" autocapitalize="none" spellcheck="false"><button class="btn" id="chk">בדיקה</button></form>
       <div class="fb" id="fb"></div>`;
     if(L){ $('sp').onclick=()=>speak(w.en); speak(w.en); }
     $('inp').focus();
+    if($('hint')) $('hint').onclick=()=>{ $('hint').outerHTML='<div class="en" style="margin:8px 0">'+blanked(w)+'</div>'; };
     $('f').onsubmit=e=>{
       e.preventDefault();
       const right=norm($('inp').value)===norm(w.en);
